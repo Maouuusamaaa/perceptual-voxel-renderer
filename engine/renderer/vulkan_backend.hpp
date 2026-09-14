@@ -56,6 +56,12 @@ public:
         std::uint64_t image
     ) noexcept;
 
+
+    bool readback_render_target(
+        std::uint64_t render_target,
+        std::vector<std::uint8_t>& output
+    ) noexcept;
+
     std::optional<std::uint64_t>
     create_render_pass();
 
@@ -80,6 +86,10 @@ public:
     bool is_image_view(
         std::uint64_t image_view
     ) const noexcept;
+
+    bool destroy_render_target_image_view(
+        std::uint64_t image_view
+    ) noexcept;
 
     bool destroy_image_view(
         std::uint64_t image_view
@@ -130,6 +140,14 @@ public:
         std::uint64_t memory,
         std::size_t size,
         std::vector<std::uint8_t>& output
+    ) noexcept;
+
+    std::optional<std::uint64_t> create_index_buffer(
+        const std::vector<std::uint8_t>& payload
+    );
+
+    bool destroy_index_buffer(
+        std::uint64_t buffer
     ) noexcept;
 
     std::optional<std::uint64_t> create_indirect_buffer(
@@ -197,6 +215,15 @@ public:
         std::uint64_t command_buffer
     ) noexcept;
 
+    bool execute_indirect_draw(
+        std::uint64_t command_buffer,
+        std::uint64_t render_pass,
+        std::uint64_t framebuffer,
+        std::uint64_t pipeline,
+        std::uint64_t index_buffer,
+        std::uint64_t indirect_buffer
+    ) noexcept;
+
     bool end_command_buffer(
         std::uint64_t command_buffer
     ) noexcept;
@@ -259,6 +286,13 @@ private:
 
     std::unordered_map<std::uint64_t, std::uint64_t>
         render_target_memory_;
+    std::unordered_map<
+        std::uint64_t,
+        std::pair<std::uint32_t, std::uint32_t>
+    > render_target_dimensions_;
+
+    std::unordered_map<std::uint64_t, std::uint32_t>
+        render_target_layouts_;
     std::unordered_set<std::uint64_t>
         render_passes_;
 
@@ -281,6 +315,8 @@ private:
 
     std::unordered_map<std::uint64_t, std::uint64_t>
         indirect_buffer_memory_;
+    std::unordered_map<std::uint64_t, std::uint64_t>
+        index_buffer_memory_;
     std::unordered_map<std::uint64_t, std::uint32_t>
         indirect_buffer_usage_;
 };

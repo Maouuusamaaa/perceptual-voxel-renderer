@@ -65,7 +65,37 @@ constexpr std::uint32_t
     ATTACHMENT_STORE_OP_STORE = 0;
 
 constexpr std::uint32_t
+    IMAGE_LAYOUT_UNDEFINED = 0;
+
+constexpr std::uint32_t
     IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL = 2;
+
+constexpr std::uint32_t
+    IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL = 6;
+
+constexpr std::uint32_t
+    ACCESS_COLOR_ATTACHMENT_WRITE_BIT = 0x00000100u;
+
+constexpr std::uint32_t
+    ACCESS_TRANSFER_READ_BIT = 0x00000800u;
+
+constexpr std::uint32_t
+    PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT = 0x00000400u;
+
+constexpr std::uint32_t
+    PIPELINE_STAGE_TOP_OF_PIPE_BIT = 0x00000001u;
+
+constexpr std::uint32_t
+    PIPELINE_STAGE_TRANSFER_BIT = 0x00001000u;
+
+constexpr std::uint32_t
+    IMAGE_ASPECT_COLOR_BIT = 0x00000001u;
+
+constexpr std::uint32_t
+    QUEUE_FAMILY_IGNORED = 0xFFFFFFFFu;
+
+constexpr std::uint32_t
+    STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER = 45;
 
 
 struct AttachmentDescription {
@@ -106,12 +136,54 @@ struct ComponentMapping {
     std::uint32_t a;
 };
 
+struct Extent3D {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t depth;
+};
+
 struct ImageSubresourceRange {
     Flags aspectMask;
     std::uint32_t baseMipLevel;
     std::uint32_t levelCount;
     std::uint32_t baseArrayLayer;
     std::uint32_t layerCount;
+};
+
+
+struct ImageMemoryBarrier {
+    StructureType sType;
+    const void* pNext;
+    Flags srcAccessMask;
+    Flags dstAccessMask;
+    std::uint32_t oldLayout;
+    std::uint32_t newLayout;
+    std::uint32_t srcQueueFamilyIndex;
+    std::uint32_t dstQueueFamilyIndex;
+    Image image;
+    ImageSubresourceRange subresourceRange;
+};
+
+struct Offset3D {
+    std::int32_t x;
+    std::int32_t y;
+    std::int32_t z;
+};
+
+struct ImageSubresourceLayers {
+    Flags aspectMask;
+    std::uint32_t mipLevel;
+    std::uint32_t baseArrayLayer;
+    std::uint32_t layerCount;
+};
+
+struct BufferImageCopy {
+    DeviceSize bufferOffset;
+    std::uint32_t bufferRowLength;
+    std::uint32_t bufferImageHeight;
+    ImageSubresourceLayers imageSubresource;
+    Offset3D imageOffset;
+    Extent3D imageExtent;
 };
 
 struct ImageViewCreateInfo {
@@ -435,12 +507,6 @@ struct FenceCreateInfo {
     std::uint32_t flags;
 };
 
-struct Extent3D {
-    std::uint32_t width;
-    std::uint32_t height;
-    std::uint32_t depth;
-};
-
 struct ImageCreateInfo {
     StructureType sType;
     const void* pNext;
@@ -643,6 +709,57 @@ using PFN_vkCmdBeginRenderPass =
 
 using PFN_vkCmdEndRenderPass =
     void (*)(CommandBuffer);
+
+
+using PFN_vkCmdPipelineBarrier =
+    void (*)(
+        CommandBuffer,
+        Flags,
+        Flags,
+        Flags,
+        std::uint32_t,
+        const void*,
+        std::uint32_t,
+        const void*,
+        std::uint32_t,
+        const ImageMemoryBarrier*
+    );
+
+using PFN_vkCmdCopyImageToBuffer =
+    void (*)(
+        CommandBuffer,
+        Image,
+        std::uint32_t,
+        Buffer,
+        std::uint32_t,
+        const BufferImageCopy*
+    );
+
+constexpr std::uint32_t INDEX_TYPE_UINT32 = 1;
+
+using PFN_vkCmdBindPipeline =
+    void (*)(
+        CommandBuffer,
+        std::uint32_t,
+        Pipeline
+    );
+
+using PFN_vkCmdBindIndexBuffer =
+    void (*)(
+        CommandBuffer,
+        Buffer,
+        DeviceSize,
+        std::uint32_t
+    );
+
+using PFN_vkCmdDrawIndexedIndirect =
+    void (*)(
+        CommandBuffer,
+        Buffer,
+        DeviceSize,
+        std::uint32_t,
+        DeviceSize
+    );
 
 using PFN_vkCreateImageView =
     Result (*)(

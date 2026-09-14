@@ -1024,6 +1024,21 @@ pvr::VulkanBackend::begin_render_pass(
         vkmini::SUBPASS_CONTENTS_INLINE
     );
 
+    const auto framebuffer_view_it =
+        framebuffer_image_views_.find(framebuffer);
+
+    if (framebuffer_view_it != framebuffer_image_views_.end()) {
+        const auto image_view_it =
+            image_view_render_targets_.find(
+                framebuffer_view_it->second
+            );
+
+        if (image_view_it != image_view_render_targets_.end()) {
+            render_target_layouts_[image_view_it->second] =
+                vkmini::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+    }
+
     return true;
 }
 
@@ -1072,6 +1087,155 @@ pvr::VulkanBackend::end_render_pass(
     );
 
     return true;
+}
+
+bool
+pvr::VulkanBackend::execute_indirect_draw(
+    std::uint64_t command_buffer,
+    std::uint64_t render_pass,
+    std::uint64_t framebuffer,
+    std::uint64_t pipeline,
+    std::uint64_t index_buffer,
+    std::uint64_t indirect_buffer
+) noexcept {
+    if (
+        logical_device_ == 0 ||
+        loader_ == nullptr ||
+        command_buffer == 0 ||
+        render_pass == 0 ||
+        framebuffer == 0 ||
+        pipeline == 0 ||
+        index_buffer == 0 ||
+        indirect_buffer == 0
+    ) {
+        return false;
+    }
+
+    if (
+        begun_command_buffers_.find(command_buffer) ==
+        begun_command_buffers_.end()
+    ) {
+        return false;
+    }
+
+    if (!is_render_pass(render_pass)) {
+        return false;
+    }
+
+    const auto framebuffer_it =
+        framebuffer_render_passes_.find(framebuffer);
+
+    if (
+        framebuffer_it == framebuffer_render_passes_.end() ||
+        framebuffer_it->second != render_pass
+    ) {
+        return false;
+    }
+
+    if (
+        graphics_pipelines_.find(pipeline) ==
+        graphics_pipelines_.end()
+    ) {
+        return false;
+    }
+
+    if (
+        index_buffer_memory_.find(index_buffer) ==
+        index_buffer_memory_.end()
+    ) {
+        return false;
+    }
+
+    if (!is_indirect_buffer(indirect_buffer)) {
+        return false;
+    }
+
+    auto get_device_proc =
+        reinterpret_cast<vkmini::PFN_vkGetDeviceProcAddr>(
+            load_symbol(loader_, "vkGetDeviceProcAddr")
+        );
+
+    if (!get_device_proc) {
+        return false;
+    }
+
+    auto bind_pipeline =
+        reinterpret_cast<vkmini::PFN_vkCmdBindPipeline>(
+            get_device_proc(
+                logical_device_,
+                "vkCmdBindPipeline"
+            )
+        );
+
+    auto bind_index_buffer =
+        reinterpret_cast<vkmini::PFN_vkCmdBindIndexBuffer>(
+            get_device_proc(
+                logical_device_,
+                "vkCmdBindIndexBuffer"
+            )
+        );
+
+    auto draw_indexed_indirect =
+        reinterpret_cast<vkmini::PFN_vkCmdDrawIndexedIndirect>(
+            get_device_proc(
+                logical_device_,
+                "vkCmdDrawIndexedIndirect"
+            )
+        );
+
+    if (
+        !bind_pipeline ||
+        !bind_index_buffer ||
+        !draw_indexed_indirect
+    ) {
+        return false;
+    }
+
+    /*
+     * #42.57.4c:
+     *
+     * Actual Vulkan indexed-indirect draw recording.
+     *
+     * The command buffer is already in the recording state.
+     * The render pass helper performs the attachment setup and
+     * clear operation. The actual draw path then binds the
+     * graphics pipeline and uint32 index buffer and executes one
+     * VkDrawIndexedIndirectCommand from the GPU indirect buffer.
+     */
+    if (!begin_render_pass(
+            command_buffer,
+            render_pass,
+            framebuffer,
+            64,
+            64
+        )) {
+        return false;
+    }
+
+    bind_pipeline(
+        static_cast<vkmini::CommandBuffer>(command_buffer),
+        vkmini::PIPELINE_BIND_POINT_GRAPHICS,
+        static_cast<vkmini::Pipeline>(pipeline)
+    );
+
+    bind_index_buffer(
+        static_cast<vkmini::CommandBuffer>(command_buffer),
+        static_cast<vkmini::Buffer>(index_buffer),
+        0,
+        vkmini::INDEX_TYPE_UINT32
+    );
+
+    draw_indexed_indirect(
+        static_cast<vkmini::CommandBuffer>(command_buffer),
+        static_cast<vkmini::Buffer>(indirect_buffer),
+        0,
+        1,
+        static_cast<vkmini::DeviceSize>(
+            sizeof(pvr::IndirectDrawCommand)
+        )
+    );
+
+    return end_render_pass(command_buffer);
 }
 
 bool
@@ -1927,7 +2091,299 @@ pvr::VulkanBackend::create_render_target(
     render_target_memory_[static_cast<std::uint64_t>(image)] =
         static_cast<std::uint64_t>(memory);
 
+    render_target_dimensions_[static_cast<std::uint64_t>(image)] =
+        {width, height};
+
+    render_target_layouts_[static_cast<std::uint64_t>(image)] =
+        vkmini::IMAGE_LAYOUT_UNDEFINED;
+
     return static_cast<std::uint64_t>(image);
+}
+
+
+bool
+pvr::VulkanBackend::readback_render_target(
+    std::uint64_t render_target,
+    std::vector<std::uint8_t>& output
+) noexcept {
+    output.clear();
+
+    if (
+        logical_device_ == 0 ||
+        loader_ == nullptr ||
+        render_target == 0 ||
+        !is_render_target(render_target)
+    ) {
+        return false;
+    }
+
+    const auto dimensions_it =
+        render_target_dimensions_.find(render_target);
+
+    const auto memory_it =
+        render_target_memory_.find(render_target);
+
+    if (
+        dimensions_it == render_target_dimensions_.end() ||
+        memory_it == render_target_memory_.end()
+    ) {
+        return false;
+    }
+
+    const std::uint32_t width =
+        dimensions_it->second.first;
+
+    const std::uint32_t height =
+        dimensions_it->second.second;
+
+    if (width == 0 || height == 0) {
+        return false;
+    }
+
+    const std::size_t byte_count =
+        static_cast<std::size_t>(width) *
+        static_cast<std::size_t>(height) *
+        4u;
+
+    auto staging_buffer =
+        create_buffer_with_usage(
+            static_cast<std::uint64_t>(byte_count),
+            0x00000002u
+        );
+
+    if (!staging_buffer) {
+        return false;
+    }
+
+    auto staging_memory =
+        allocate_buffer_memory(*staging_buffer);
+
+    if (!staging_memory) {
+        destroy_buffer(*staging_buffer);
+        return false;
+    }
+
+    if (!bind_buffer_memory(*staging_buffer, *staging_memory)) {
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    auto command_pool = create_command_pool();
+
+    if (!command_pool) {
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    auto command_buffer =
+        allocate_command_buffer(*command_pool);
+
+    if (!command_buffer) {
+        destroy_command_pool(*command_pool);
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    auto get_device_proc =
+        reinterpret_cast<vkmini::PFN_vkGetDeviceProcAddr>(
+            load_symbol(
+                loader_,
+                "vkGetDeviceProcAddr"
+            )
+        );
+
+    if (!get_device_proc) {
+        destroy_command_pool(*command_pool);
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    auto cmd_pipeline_barrier =
+        reinterpret_cast<vkmini::PFN_vkCmdPipelineBarrier>(
+            get_device_proc(
+                logical_device_,
+                "vkCmdPipelineBarrier"
+            )
+        );
+
+    auto cmd_copy_image_to_buffer =
+        reinterpret_cast<vkmini::PFN_vkCmdCopyImageToBuffer>(
+            get_device_proc(
+                logical_device_,
+                "vkCmdCopyImageToBuffer"
+            )
+        );
+
+    if (!cmd_pipeline_barrier || !cmd_copy_image_to_buffer) {
+        destroy_command_pool(*command_pool);
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    if (!begin_command_buffer(*command_buffer)) {
+        destroy_command_pool(*command_pool);
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    const auto layout_it =
+        render_target_layouts_.find(render_target);
+
+    const std::uint32_t old_layout =
+        layout_it == render_target_layouts_.end()
+            ? vkmini::IMAGE_LAYOUT_UNDEFINED
+            : layout_it->second;
+
+    vkmini::ImageMemoryBarrier to_transfer{};
+    to_transfer.sType =
+        vkmini::STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    to_transfer.pNext = nullptr;
+    to_transfer.srcAccessMask =
+        old_layout ==
+            vkmini::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            ? vkmini::ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            : 0;
+    to_transfer.dstAccessMask =
+        vkmini::ACCESS_TRANSFER_READ_BIT;
+    to_transfer.oldLayout = old_layout;
+    to_transfer.newLayout =
+        vkmini::IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    to_transfer.srcQueueFamilyIndex =
+        vkmini::QUEUE_FAMILY_IGNORED;
+    to_transfer.dstQueueFamilyIndex =
+        vkmini::QUEUE_FAMILY_IGNORED;
+    to_transfer.image =
+        static_cast<vkmini::Image>(render_target);
+    to_transfer.subresourceRange.aspectMask =
+        vkmini::IMAGE_ASPECT_COLOR_BIT;
+    to_transfer.subresourceRange.baseMipLevel = 0;
+    to_transfer.subresourceRange.levelCount = 1;
+    to_transfer.subresourceRange.baseArrayLayer = 0;
+    to_transfer.subresourceRange.layerCount = 1;
+
+    const std::uint32_t src_stage =
+        old_layout ==
+            vkmini::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+            ? vkmini::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+            : vkmini::PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+
+    cmd_pipeline_barrier(
+        static_cast<vkmini::CommandBuffer>(*command_buffer),
+        src_stage,
+        vkmini::PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &to_transfer
+    );
+
+    vkmini::BufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask =
+        vkmini::IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {
+        width,
+        height,
+        1
+    };
+
+    cmd_copy_image_to_buffer(
+        static_cast<vkmini::CommandBuffer>(*command_buffer),
+        static_cast<vkmini::Image>(render_target),
+        vkmini::IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        static_cast<vkmini::Buffer>(*staging_buffer),
+        1,
+        &region
+    );
+
+    vkmini::ImageMemoryBarrier back_to_color{};
+    back_to_color.sType =
+        vkmini::STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    back_to_color.pNext = nullptr;
+    back_to_color.srcAccessMask =
+        vkmini::ACCESS_TRANSFER_READ_BIT;
+    back_to_color.dstAccessMask =
+        vkmini::ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    back_to_color.oldLayout =
+        vkmini::IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    back_to_color.newLayout =
+        vkmini::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    back_to_color.srcQueueFamilyIndex =
+        vkmini::QUEUE_FAMILY_IGNORED;
+    back_to_color.dstQueueFamilyIndex =
+        vkmini::QUEUE_FAMILY_IGNORED;
+    back_to_color.image =
+        static_cast<vkmini::Image>(render_target);
+    back_to_color.subresourceRange.aspectMask =
+        vkmini::IMAGE_ASPECT_COLOR_BIT;
+    back_to_color.subresourceRange.baseMipLevel = 0;
+    back_to_color.subresourceRange.levelCount = 1;
+    back_to_color.subresourceRange.baseArrayLayer = 0;
+    back_to_color.subresourceRange.layerCount = 1;
+
+    cmd_pipeline_barrier(
+        static_cast<vkmini::CommandBuffer>(*command_buffer),
+        vkmini::PIPELINE_STAGE_TRANSFER_BIT,
+        vkmini::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        0,
+        0,
+        nullptr,
+        0,
+        nullptr,
+        1,
+        &back_to_color
+    );
+
+    if (!end_command_buffer(*command_buffer)) {
+        destroy_command_pool(*command_pool);
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    if (!submit_command_buffer(*command_buffer)) {
+        destroy_command_pool(*command_pool);
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    if (!readback_buffer(
+            *staging_buffer,
+            *staging_memory,
+            byte_count,
+            output
+        )) {
+        destroy_command_pool(*command_pool);
+        destroy_buffer(*staging_buffer);
+        free_memory(*staging_memory);
+        return false;
+    }
+
+    render_target_layouts_[render_target] =
+        vkmini::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    destroy_command_pool(*command_pool);
+
+    destroy_buffer(*staging_buffer);
+    free_memory(*staging_memory);
+
+    return output.size() == byte_count;
 }
 
 bool
@@ -2003,6 +2459,8 @@ pvr::VulkanBackend::destroy_render_target(
     );
 
     render_target_memory_.erase(it);
+    render_target_dimensions_.erase(image);
+    render_target_layouts_.erase(image);
 
     return true;
 }
@@ -2147,6 +2605,13 @@ pvr::VulkanBackend::destroy_image_view(
     image_view_render_targets_.erase(image_view);
 
     return true;
+}
+
+bool
+pvr::VulkanBackend::destroy_render_target_image_view(
+    std::uint64_t image_view
+) noexcept {
+    return destroy_image_view(image_view);
 }
 
 std::optional<std::uint64_t>
@@ -2810,6 +3275,87 @@ pvr::VulkanBackend::readback_buffer(
 }
 
 std::optional<std::uint64_t>
+pvr::VulkanBackend::create_index_buffer(
+    const std::vector<std::uint8_t>& payload
+) {
+    if (payload.empty()) {
+        return std::nullopt;
+    }
+
+    constexpr std::uint32_t BUFFER_USAGE_TRANSFER_DST_BIT =
+        0x00000002u;
+
+    constexpr std::uint32_t BUFFER_USAGE_INDEX_BUFFER_BIT =
+        0x00000040u;
+
+    const auto buffer = create_buffer_with_usage(
+        static_cast<std::uint64_t>(payload.size()),
+        BUFFER_USAGE_TRANSFER_DST_BIT |
+        BUFFER_USAGE_INDEX_BUFFER_BIT
+    );
+
+    if (!buffer.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto memory =
+        allocate_buffer_memory(*buffer);
+
+    if (!memory.has_value()) {
+        destroy_buffer(*buffer);
+        return std::nullopt;
+    }
+
+    if (!bind_buffer_memory(*buffer, *memory)) {
+        destroy_buffer(*buffer);
+        free_memory(*memory);
+        return std::nullopt;
+    }
+
+    if (!upload_buffer(
+            *buffer,
+            *memory,
+            payload)) {
+        destroy_buffer(*buffer);
+        free_memory(*memory);
+        return std::nullopt;
+    }
+
+    index_buffer_memory_.emplace(
+        *buffer,
+        *memory
+    );
+
+    return *buffer;
+}
+
+bool
+pvr::VulkanBackend::destroy_index_buffer(
+    std::uint64_t buffer
+) noexcept {
+    const auto it =
+        index_buffer_memory_.find(buffer);
+
+    if (it == index_buffer_memory_.end()) {
+        return false;
+    }
+
+    const std::uint64_t memory = it->second;
+
+    if (!destroy_buffer(buffer)) {
+        return false;
+    }
+
+    if (!free_memory(memory)) {
+        return false;
+    }
+
+    index_buffer_memory_.erase(it);
+
+    return true;
+}
+
+std::optional<std::uint64_t>
 pvr::VulkanBackend::create_indirect_buffer(
     const IndirectBuffer& buffer,
     std::uint32_t mesh_index_count
@@ -2831,7 +3377,7 @@ pvr::VulkanBackend::create_indirect_buffer(
     }
 
     constexpr std::uint32_t BUFFER_USAGE_TRANSFER_DST_BIT = 0x00000002u;
-    constexpr std::uint32_t BUFFER_USAGE_INDIRECT_BUFFER_BIT = 0x00000040u;
+    constexpr std::uint32_t BUFFER_USAGE_INDIRECT_BUFFER_BIT = 0x00000100u;
 
     const auto vk_buffer = create_buffer_with_usage(
         static_cast<std::uint64_t>(payload.size()),

@@ -235,7 +235,7 @@ static void cycle42_56_1_indirect_usage_cleanup_contract() {
 
     assert(
         backend.indirect_buffer_usage_flags(*buffer) &
-        0x00000040u
+        0x00000100u
     );
 
     assert(backend.destroy_indirect_buffer(*buffer));
@@ -270,7 +270,7 @@ static void cycle42_56_1_vulkan_indirect_usage_flag_contract() {
 
     assert(
         backend.indirect_buffer_usage_flags(*buffer) &
-        0x00000040u
+        0x00000100u
     );
 
     assert(
@@ -1131,7 +1131,583 @@ static void cycle42_57_3_6_graphics_pipeline_lifecycle_contract() {
     );
 }
 
+
+
+static void cycle42_57_4a_index_buffer_resource_contract() {
+    pvr::VulkanBackend backend;
+
+    const auto init = backend.initialize();
+    assert(init.ok);
+    assert(
+        backend.state() ==
+        pvr::VulkanBackendState::DeviceReady
+    );
+
+    /*
+     * One indexed triangle: uint32 indices [0, 1, 2].
+     */
+    const std::vector<std::uint8_t> index_payload{
+        0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00
+    };
+
+    const auto index_buffer =
+        backend.create_index_buffer(index_payload);
+
+    assert(index_buffer.has_value());
+    assert(*index_buffer != 0);
+
+    assert(
+        backend.destroy_index_buffer(*index_buffer)
+    );
+}
+
+static
+void cycle42_57_5_gpu_result_verification_contract() {
+    pvr::VulkanBackend backend;
+
+    const auto init = backend.initialize();
+    assert(init.ok);
+    assert(
+        backend.state() ==
+        pvr::VulkanBackendState::DeviceReady
+    );
+
+    const auto render_target =
+        backend.create_render_target(64, 64);
+    assert(render_target.has_value());
+
+    const auto render_pass =
+        backend.create_render_pass_for_render_target(
+            *render_target
+        );
+    assert(render_pass.has_value());
+
+    const auto image_view =
+        backend.create_render_target_image_view(
+            *render_target
+        );
+    assert(image_view.has_value());
+
+    const auto framebuffer =
+        backend.create_framebuffer(
+            *render_pass,
+            *image_view,
+            64,
+            64
+        );
+    assert(framebuffer.has_value());
+
+    const auto load_spirv = [](const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+
+        if (!file) {
+            return std::vector<std::uint32_t>{};
+        }
+
+        file.seekg(0, std::ios::end);
+        const auto size = file.tellg();
+
+        if (
+            size <= 0 ||
+            (size % static_cast<std::streamoff>(
+                sizeof(std::uint32_t)
+            )) != 0
+        ) {
+            return std::vector<std::uint32_t>{};
+        }
+
+        file.seekg(0, std::ios::beg);
+
+        std::vector<std::uint32_t> words(
+            static_cast<std::size_t>(size) /
+            sizeof(std::uint32_t)
+        );
+
+        file.read(
+            reinterpret_cast<char*>(words.data()),
+            size
+        );
+
+        if (!file) {
+            return std::vector<std::uint32_t>{};
+        }
+
+        return words;
+    };
+
+    const auto load_spirv_from_candidates =
+        [&load_spirv](const char* relative_path) {
+            const std::vector<std::string> candidates{
+                relative_path,
+                std::string("../") + relative_path,
+                std::string("../../") + relative_path,
+                std::string("../../../") + relative_path
+            };
+
+            for (const auto& candidate : candidates) {
+                auto words = load_spirv(candidate);
+
+                if (!words.empty()) {
+                    return words;
+                }
+            }
+
+            return std::vector<std::uint32_t>{};
+        };
+
+    const auto vertex_spirv =
+        load_spirv_from_candidates(
+            "tests/gpu/shaders/pvr_test.vert.spv"
+        );
+
+    const auto fragment_spirv =
+        load_spirv_from_candidates(
+            "tests/gpu/shaders/pvr_test.frag.spv"
+        );
+
+    assert(!vertex_spirv.empty());
+    assert(!fragment_spirv.empty());
+
+    const auto vertex_shader =
+        backend.create_shader_module(vertex_spirv);
+
+    const auto fragment_shader =
+        backend.create_shader_module(fragment_spirv);
+
+    assert(vertex_shader.has_value());
+    assert(fragment_shader.has_value());
+
+    const auto pipeline =
+        backend.create_graphics_pipeline(
+            *render_pass,
+            *vertex_shader,
+            *fragment_shader
+        );
+
+    assert(pipeline.has_value());
+    assert(*pipeline != 0);
+
+    /*
+     * Three indices describe one triangle.
+     *
+     * The current test vertex shader uses gl_VertexIndex,
+     * therefore no vertex buffer is required for this minimal
+     * rasterization path. Indexed drawing still requires an
+     * actual Vulkan index buffer.
+     */
+    const std::vector<std::uint8_t> index_payload{
+        0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00
+    };
+
+    const auto index_buffer =
+        backend.create_index_buffer(index_payload);
+
+    assert(index_buffer.has_value());
+    assert(*index_buffer != 0);
+
+    const std::vector<pvr::IndirectDrawCommand> commands{
+        {3, 1, 0, 0, 0}
+    };
+
+    const pvr::IndirectBuffer indirect_buffer(commands);
+
+    assert(!indirect_buffer.empty());
+    assert(indirect_buffer.size() == 1);
+    assert(indirect_buffer.validate(3));
+
+    const auto indirect =
+        backend.create_indirect_buffer(
+            indirect_buffer,
+            3
+        );
+
+    assert(indirect.has_value());
+    assert(*indirect != 0);
+    assert(backend.is_indirect_buffer(*indirect));
+
+    const auto command_pool =
+        backend.create_command_pool();
+
+    assert(command_pool.has_value());
+    assert(*command_pool != 0);
+
+    const auto command_buffer =
+        backend.allocate_command_buffer(*command_pool);
+
+    assert(command_buffer.has_value());
+    assert(*command_buffer != 0);
+
+    assert(
+        backend.begin_command_buffer(*command_buffer)
+    );
+
+    assert(
+        backend.execute_indirect_draw(
+            *command_buffer,
+            *render_pass,
+            *framebuffer,
+            *pipeline,
+            *index_buffer,
+            *indirect
+        )
+    );
+
+    assert(
+        backend.end_command_buffer(*command_buffer)
+    );
+
+    assert(
+        backend.submit_command_buffer(*command_buffer)
+    );
+
+    /*
+     * #42.57.5 GPU result verification:
+     * The indirect draw must produce rasterized data in the
+     * Vulkan render target, and the readback path must expose
+     * that data to the CPU.
+     */
+    std::vector<std::uint8_t> pixels;
+
+    if (!backend.readback_render_target(*render_target, pixels)) {
+        throw std::runtime_error("render target readback failed");
+    }
+
+    constexpr std::size_t expected_pixel_bytes =
+        static_cast<std::size_t>(64) *
+        static_cast<std::size_t>(64) *
+        4u;
+
+    if (pixels.size() != expected_pixel_bytes) {
+        throw std::runtime_error(
+            "unexpected render target pixel size"
+        );
+    }
+
+    /*
+     * Verify RGB rasterization specifically.
+     *
+     * The render pass clear color has a non-zero alpha channel,
+     * so checking arbitrary non-zero bytes would not prove that
+     * the triangle produced visible color data.
+     */
+    bool has_nonzero_rgb_pixel = false;
+
+    for (
+        std::size_t offset = 0;
+        offset + 3u <= pixels.size();
+        offset += 4u
+    ) {
+        const auto red   = pixels[offset + 0u];
+        const auto green = pixels[offset + 1u];
+        const auto blue  = pixels[offset + 2u];
+
+        if (
+            red != 0u ||
+            green != 0u ||
+            blue != 0u
+        ) {
+            has_nonzero_rgb_pixel = true;
+            break;
+        }
+    }
+
+    if (!has_nonzero_rgb_pixel) {
+        throw std::runtime_error(
+            "GPU render target contains no rasterized RGB pixel data"
+        );
+    }
+
+    assert(
+        backend.destroy_command_pool(*command_pool)
+    );
+
+    assert(
+        backend.destroy_indirect_buffer(*indirect)
+    );
+
+    assert(
+        backend.destroy_index_buffer(*index_buffer)
+    );
+
+    assert(
+        backend.destroy_graphics_pipeline(*pipeline)
+    );
+
+    assert(
+        backend.destroy_shader_module(*fragment_shader)
+    );
+
+    assert(
+        backend.destroy_shader_module(*vertex_shader)
+    );
+
+    assert(
+        backend.destroy_framebuffer(*framebuffer)
+    );
+
+    assert(
+        backend.destroy_render_target_image_view(*image_view)
+    );
+
+    assert(
+        backend.destroy_render_pass(*render_pass)
+    );
+
+    assert(
+        backend.destroy_render_target(*render_target)
+    );
+}
+
+void cycle42_57_4_actual_indirect_draw_contract() {
+    pvr::VulkanBackend backend;
+
+    const auto init = backend.initialize();
+    assert(init.ok);
+    assert(
+        backend.state() ==
+        pvr::VulkanBackendState::DeviceReady
+    );
+
+    const auto render_target =
+        backend.create_render_target(64, 64);
+    assert(render_target.has_value());
+
+    const auto render_pass =
+        backend.create_render_pass_for_render_target(
+            *render_target
+        );
+    assert(render_pass.has_value());
+
+    const auto image_view =
+        backend.create_render_target_image_view(
+            *render_target
+        );
+    assert(image_view.has_value());
+
+    const auto framebuffer =
+        backend.create_framebuffer(
+            *render_pass,
+            *image_view,
+            64,
+            64
+        );
+    assert(framebuffer.has_value());
+
+    const auto load_spirv = [](const std::string& path) {
+        std::ifstream file(path, std::ios::binary);
+
+        if (!file) {
+            return std::vector<std::uint32_t>{};
+        }
+
+        file.seekg(0, std::ios::end);
+        const auto size = file.tellg();
+
+        if (
+            size <= 0 ||
+            (size % static_cast<std::streamoff>(
+                sizeof(std::uint32_t)
+            )) != 0
+        ) {
+            return std::vector<std::uint32_t>{};
+        }
+
+        file.seekg(0, std::ios::beg);
+
+        std::vector<std::uint32_t> words(
+            static_cast<std::size_t>(size) /
+            sizeof(std::uint32_t)
+        );
+
+        file.read(
+            reinterpret_cast<char*>(words.data()),
+            size
+        );
+
+        if (!file) {
+            return std::vector<std::uint32_t>{};
+        }
+
+        return words;
+    };
+
+    const auto load_spirv_from_candidates =
+        [&load_spirv](const char* relative_path) {
+            const std::vector<std::string> candidates{
+                relative_path,
+                std::string("../") + relative_path,
+                std::string("../../") + relative_path,
+                std::string("../../../") + relative_path
+            };
+
+            for (const auto& candidate : candidates) {
+                auto words = load_spirv(candidate);
+
+                if (!words.empty()) {
+                    return words;
+                }
+            }
+
+            return std::vector<std::uint32_t>{};
+        };
+
+    const auto vertex_spirv =
+        load_spirv_from_candidates(
+            "tests/gpu/shaders/pvr_test.vert.spv"
+        );
+
+    const auto fragment_spirv =
+        load_spirv_from_candidates(
+            "tests/gpu/shaders/pvr_test.frag.spv"
+        );
+
+    assert(!vertex_spirv.empty());
+    assert(!fragment_spirv.empty());
+
+    const auto vertex_shader =
+        backend.create_shader_module(vertex_spirv);
+
+    const auto fragment_shader =
+        backend.create_shader_module(fragment_spirv);
+
+    assert(vertex_shader.has_value());
+    assert(fragment_shader.has_value());
+
+    const auto pipeline =
+        backend.create_graphics_pipeline(
+            *render_pass,
+            *vertex_shader,
+            *fragment_shader
+        );
+
+    assert(pipeline.has_value());
+    assert(*pipeline != 0);
+
+    /*
+     * Three indices describe one triangle.
+     *
+     * The current test vertex shader uses gl_VertexIndex,
+     * therefore no vertex buffer is required for this minimal
+     * rasterization path. Indexed drawing still requires an
+     * actual Vulkan index buffer.
+     */
+    const std::vector<std::uint8_t> index_payload{
+        0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00
+    };
+
+    const auto index_buffer =
+        backend.create_index_buffer(index_payload);
+
+    assert(index_buffer.has_value());
+    assert(*index_buffer != 0);
+
+    const std::vector<pvr::IndirectDrawCommand> commands{
+        {3, 1, 0, 0, 0}
+    };
+
+    const pvr::IndirectBuffer indirect_buffer(commands);
+
+    assert(!indirect_buffer.empty());
+    assert(indirect_buffer.size() == 1);
+    assert(indirect_buffer.validate(3));
+
+    const auto indirect =
+        backend.create_indirect_buffer(
+            indirect_buffer,
+            3
+        );
+
+    assert(indirect.has_value());
+    assert(*indirect != 0);
+    assert(backend.is_indirect_buffer(*indirect));
+
+    const auto command_pool =
+        backend.create_command_pool();
+
+    assert(command_pool.has_value());
+    assert(*command_pool != 0);
+
+    const auto command_buffer =
+        backend.allocate_command_buffer(*command_pool);
+
+    assert(command_buffer.has_value());
+    assert(*command_buffer != 0);
+
+    assert(
+        backend.begin_command_buffer(*command_buffer)
+    );
+
+    assert(
+        backend.execute_indirect_draw(
+            *command_buffer,
+            *render_pass,
+            *framebuffer,
+            *pipeline,
+            *index_buffer,
+            *indirect
+        )
+    );
+
+    assert(
+        backend.end_command_buffer(*command_buffer)
+    );
+
+    assert(
+        backend.submit_command_buffer(*command_buffer)
+    );
+
+    assert(
+        backend.destroy_command_pool(*command_pool)
+    );
+
+    assert(
+        backend.destroy_indirect_buffer(*indirect)
+    );
+
+    assert(
+        backend.destroy_index_buffer(*index_buffer)
+    );
+
+    assert(
+        backend.destroy_graphics_pipeline(*pipeline)
+    );
+
+    assert(
+        backend.destroy_shader_module(*fragment_shader)
+    );
+
+    assert(
+        backend.destroy_shader_module(*vertex_shader)
+    );
+
+    assert(
+        backend.destroy_framebuffer(*framebuffer)
+    );
+
+    assert(
+        backend.destroy_render_target_image_view(*image_view)
+    );
+
+    assert(
+        backend.destroy_render_pass(*render_pass)
+    );
+
+    assert(
+        backend.destroy_render_target(*render_target)
+    );
+}
+
+
 int main() {
+    cycle42_57_5_gpu_result_verification_contract();
+    cycle42_57_4_actual_indirect_draw_contract();
+    cycle42_57_4a_index_buffer_resource_contract();
     cycle42_57_3_6_graphics_pipeline_lifecycle_contract();
     cycle42_57_3_5_shader_module_lifecycle_contract();
 
