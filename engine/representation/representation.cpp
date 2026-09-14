@@ -1,0 +1,2 @@
+#include "representation/representation.hpp"
+namespace pvr { Representation RepresentationManager::request(std::uint64_t id, RepresentationType type, double memoryCost){ auto& r=cache_[id]; r.id=id; r.type=type; r.memoryCost=memoryCost; ++r.version; return r; } const Representation* RepresentationManager::find(std::uint64_t id) const { auto i=cache_.find(id); return i==cache_.end()?nullptr:&i->second; } }

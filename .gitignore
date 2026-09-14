@@ -1,0 +1,47 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+cmake_install.cmake
+Makefile
+install_manifest.txt
+
+# Native build artifacts
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dll
+*.dylib
+*.exe
+
+# Local IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Termux/local backup of the previous broken worktree metadata
+.git.broken-worktree
+
+# Temporary/log files
+*.tmp
+*.log
+
+# Local development backups
+*.bak
+*.backup
+*.orig
+*.old
+*.rej
+*.cycle*
+
+# TDD/recovery snapshots
+*.before-*
