@@ -422,6 +422,7 @@ constexpr StructureType STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO = 30;
 constexpr StructureType STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO = 39;
 constexpr StructureType STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO = 40;
 constexpr StructureType STRUCTURE_TYPE_FENCE_CREATE_INFO = 8;
+constexpr StructureType STRUCTURE_TYPE_SUBMIT_INFO = 4;
 constexpr StructureType STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO = 5;
 constexpr std::uint32_t API_VERSION_1_0 = (1u << 22);
 constexpr std::uint32_t API_VERSION_1_1 = (1u << 22) | (1u << 12);

@@ -1,9 +1,13 @@
 #include "renderer/vulkan_backend.hpp"
+#include "renderer/vulkan/vulkan_minimal.hpp"
 #include <cassert>
 #include <iostream>
 #include "mesh/mesh_cluster.hpp"
 #include <fstream>
 
+static_assert(
+    pvr::vkmini::STRUCTURE_TYPE_SUBMIT_INFO == 4
+);
 
 static void cycle42_49_graphics_queue_family_selection() {
     pvr::VulkanBackend backend;
@@ -343,6 +347,28 @@ static void cycle42_57_1_vulkan_command_submission_contract() {
 
     assert(command_buffer.has_value());
     assert(*command_buffer != 0);
+
+    /*
+     * A newly allocated command buffer is not executable.  The backend
+     * must reject it locally instead of passing it to vkQueueSubmit.
+     */
+    assert(
+        !backend.submit_command_buffer(
+            *command_buffer
+        )
+    );
+
+    assert(
+        backend.begin_command_buffer(
+            *command_buffer
+        )
+    );
+
+    assert(
+        backend.end_command_buffer(
+            *command_buffer
+        )
+    );
 
     assert(
         backend.submit_command_buffer(

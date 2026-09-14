@@ -1272,6 +1272,13 @@ pvr::VulkanBackend::submit_command_buffer(
         return false;
     }
 
+    if (
+        executable_command_buffers_.find(command_buffer) ==
+        executable_command_buffers_.end()
+    ) {
+        return false;
+    }
+
     auto get_device_proc =
         reinterpret_cast<vkmini::PFN_vkGetDeviceProcAddr>(
             load_symbol(loader_, "vkGetDeviceProcAddr")
@@ -1352,7 +1359,7 @@ pvr::VulkanBackend::submit_command_buffer(
         static_cast<vkmini::CommandBuffer>(command_buffer);
 
     const vkmini::SubmitInfo submit_info{
-        0,
+        vkmini::STRUCTURE_TYPE_SUBMIT_INFO,
         nullptr,
         0,
         nullptr,
@@ -1460,6 +1467,7 @@ pvr::VulkanBackend::destroy_command_pool(
 
     for (const auto buffer : it->second) {
         begun_command_buffers_.erase(buffer);
+        executable_command_buffers_.erase(buffer);
     }
 
     command_pool_buffers_.erase(it);
@@ -1523,6 +1531,7 @@ pvr::VulkanBackend::begin_command_buffer(
     }
 
     begun_command_buffers_.insert(command_buffer);
+    executable_command_buffers_.erase(command_buffer);
     return true;
 }
 
@@ -1576,6 +1585,7 @@ pvr::VulkanBackend::end_command_buffer(
     }
 
     begun_command_buffers_.erase(it);
+    executable_command_buffers_.insert(command_buffer);
     return true;
 }
 

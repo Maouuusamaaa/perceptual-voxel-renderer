@@ -280,6 +280,9 @@ private:
     std::unordered_set<
         std::uint64_t
     > begun_command_buffers_;
+    std::unordered_set<
+        std::uint64_t
+    > executable_command_buffers_;
 
     std::uint64_t
         last_submitted_command_buffer_{0};
